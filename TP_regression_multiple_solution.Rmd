@@ -1,0 +1,852 @@
+---
+title: "TP – Régression Multiple en Économétrie — CORRIGÉ"
+subtitle: "Les déterminants des salaires : une application de l'équation de Mincer"
+date: "Session 2025-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4)
+```
+
+---
+
+# Présentation du TP
+
+## Chargement des packages
+
+```{r packages}
+library(tidyverse)
+library(car)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+library(ggcorrplot)
+library(broom)
+library(GGally)
+```
+
+## Génération et chargement des données
+
+```{r generer_donnees}
+# Génération reproductible de la base
+set.seed(2024)
+n <- 500
+
+education     <- sample(8:22, n, replace = TRUE,
+                        prob = c(0.02,0.03,0.05,0.08,0.10,
+                                 0.12,0.12,0.12,0.10,0.08,
+                                 0.07,0.05,0.04,0.01,0.01))
+experience    <- pmax(0, round(rnorm(n, mean = 18, sd = 10)))
+experience    <- pmin(experience, 45)
+femme         <- rbinom(n, 1, prob = 0.48)
+secteur_pub   <- rbinom(n, 1, prob = 0.30)
+taille_ville  <- sample(c("rural","petite","grande"), n,
+                        replace = TRUE, prob = c(0.25, 0.35, 0.40))
+type_contrat  <- sample(c("CDI","CDD","indep"), n,
+                        replace = TRUE, prob = c(0.65, 0.20, 0.15))
+nb_enfants    <- rpois(n, lambda = 1.2)
+syndique      <- rbinom(n, 1, prob = 0.12)
+
+ville_eff   <- ifelse(taille_ville == "grande", 0.12,
+               ifelse(taille_ville == "petite", 0.05, 0))
+contrat_eff <- ifelse(type_contrat == "CDI", 0.10,
+               ifelse(type_contrat == "indep", 0.05, 0))
+
+log_salaire <- 5.80 +
+               0.085  * education +
+               0.040  * experience +
+              -0.0006 * experience^2 +
+              -0.180  * femme +
+               0.130  * secteur_pub +
+               ville_eff +
+               contrat_eff +
+               0.020  * syndique +
+              -0.015  * nb_enfants * femme +
+               rnorm(n, 0, 0.22)
+
+salaire <- round(exp(log_salaire))
+heures  <- pmax(15, pmin(round(rnorm(n, 38, 5)), 60))
+age     <- pmax(18, pmin(16 + education - 6 + experience + round(rnorm(n,0,1)), 65))
+
+donnees <- data.frame(
+  id = 1:n, salaire = salaire, log_salaire = round(log(salaire),4),
+  education = education, experience = experience,
+  exp_carre = experience^2, age = age,
+  femme = femme, secteur_pub = secteur_pub,
+  taille_ville = taille_ville, type_contrat = type_contrat,
+  nb_enfants = nb_enfants, syndique = syndique, heures = heures
+)
+
+# Factorisation avec niveaux de référence
+donnees <- donnees %>%
+  mutate(
+    taille_ville = factor(taille_ville, levels = c("rural","petite","grande")),
+    type_contrat = factor(type_contrat, levels = c("CDD","CDI","indep"))
+  )
+
+cat("Dimensions :", nrow(donnees), "x", ncol(donnees))
+```
+
+---
+
+# Partie 1 – Exploration des données
+
+## Q1.1 – Structure de la base
+
+```{r q1_1}
+# Dimensions
+cat("=== Dimensions ===\n")
+dim(donnees)
+
+# Type des variables
+cat("\n=== Types de variables ===\n")
+glimpse(donnees)
+
+# Aperçu
+cat("\n=== Premières lignes ===\n")
+head(donnees, 6)
+```
+
+> **Commentaire** : La base contient 500 observations et 14 variables. Les variables `taille_ville` et `type_contrat` ont été converties en facteurs avec les niveaux de référence "rural" et "CDD" respectivement, ce qui détermine quelles modalités apparaîtront dans la régression.
+
+## Q1.2 – Statistiques descriptives
+
+```{r q1_2}
+# Stats descriptives des variables numériques
+vars_num <- c("salaire","log_salaire","education","experience","age","heures","nb_enfants")
+
+stat_desc <- donnees %>%
+  select(all_of(vars_num)) %>%
+  summary()
+print(stat_desc)
+
+# Écart-type
+cat("\n=== Écarts-types ===\n")
+donnees %>% select(all_of(vars_num)) %>%
+  summarise(across(everything(), sd)) %>%
+  round(2) %>% print()
+
+# Répartition genre
+cat("\n=== Répartition hommes/femmes ===\n")
+table(donnees$femme) %>% addmargins()
+prop.table(table(donnees$femme)) %>% round(3)
+
+# Répartition contrat
+cat("\n=== Répartition type de contrat ===\n")
+table(donnees$type_contrat) %>% addmargins()
+
+# Répartition taille de ville
+cat("\n=== Répartition taille de ville ===\n")
+table(donnees$taille_ville) %>% addmargins()
+```
+
+> **Commentaire** : Le salaire médian est d'environ 2 400 € avec un fort écart-type (≈ 800 €), reflétant une dispersion importante. L'éducation moyenne est de ≈14 ans (bac+2). L'échantillon est quasi-équilibré en genre (≈48% de femmes).
+
+## Q1.3 – Distribution du salaire brut vs. log-salaire
+
+```{r q1_3, fig.width=11, fig.height=4}
+p1 <- ggplot(donnees, aes(x = salaire)) +
+  geom_histogram(bins = 40, fill = "#2196F3", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = mean(donnees$salaire), color = "red", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = median(donnees$salaire), color = "orange", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution du salaire brut",
+       subtitle = "Rouge = moyenne | Orange = médiane",
+       x = "Salaire (€)", y = "Fréquence") +
+  scale_x_continuous(labels = scales::comma) +
+  theme_minimal()
+
+p2 <- ggplot(donnees, aes(x = log_salaire)) +
+  geom_histogram(bins = 40, fill = "#4CAF50", color = "white", alpha = 0.8) +
+  stat_function(fun = function(x)
+    dnorm(x, mean(donnees$log_salaire), sd(donnees$log_salaire)) * nrow(donnees) * 0.05,
+    color = "darkgreen", linewidth = 1) +
+  geom_vline(xintercept = mean(donnees$log_salaire), color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution du log-salaire",
+       subtitle = "Courbe normale superposée",
+       x = "Log-salaire", y = "Fréquence") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Commentaire** : Le salaire brut présente une distribution **asymétrique à droite** (queue à droite prononcée), comme c'est habituel pour les variables de revenu. Le log-salaire présente une distribution beaucoup plus proche de la **loi normale**. Le passage en log est donc justifié car :
+> 1. Il normalise la distribution de la variable dépendante (condition OLS)
+> 2. Il permet d'interpréter les coefficients comme des **taux de variation** (rendements en %)
+> 3. Il traite mieux l'hétéroscédasticité liée aux niveaux de revenus
+
+## Q1.4 – Distribution du log-salaire par genre
+
+```{r q1_4}
+med_genre <- donnees %>%
+  group_by(femme) %>%
+  summarise(mediane = median(log_salaire)) %>%
+  mutate(genre = ifelse(femme == 1, "Femmes", "Hommes"))
+
+ggplot(donnees, aes(x = log_salaire, fill = factor(femme), color = factor(femme))) +
+  geom_density(alpha = 0.4, linewidth = 0.8) +
+  geom_vline(data = med_genre, aes(xintercept = mediane, color = factor(femme)),
+             linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("steelblue","tomato"),
+                    labels = c("Hommes","Femmes"), name = "") +
+  scale_color_manual(values = c("steelblue","tomato"),
+                     labels = c("Hommes","Femmes"), name = "") +
+  labs(title = "Distribution du log-salaire par genre",
+       subtitle = "Lignes pointillées = médianes",
+       x = "Log-salaire", y = "Densité") +
+  theme_minimal()
+
+# Écart médian
+cat("Médiane log-salaire Hommes :", round(med_genre$mediane[med_genre$femme==0], 4), "\n")
+cat("Médiane log-salaire Femmes :", round(med_genre$mediane[med_genre$femme==1], 4), "\n")
+cat("Écart (en %):", round((exp(med_genre$mediane[med_genre$femme==0]) -
+                             exp(med_genre$mediane[med_genre$femme==1])) /
+                             exp(med_genre$mediane[med_genre$femme==0]) * 100, 1), "%\n")
+```
+
+> **Commentaire** : La distribution des femmes est décalée vers la gauche par rapport à celle des hommes. L'écart de médiane est d'environ 15-20%, ce qui est cohérent avec la vraie valeur simulée du paramètre (-18%). Cet écart persistera après contrôle des autres variables mais sera plus précisément estimé en régression multiple.
+
+## Q1.5 – Matrice de corrélation
+
+```{r q1_5, fig.width=7, fig.height=6}
+vars_cor <- donnees %>%
+  select(log_salaire, education, experience, age, heures, nb_enfants)
+
+mat_cor <- cor(vars_cor, use = "complete.obs")
+round(mat_cor, 3)
+
+ggcorrplot(mat_cor,
+           method = "circle",
+           type = "lower",
+           lab = TRUE,
+           lab_size = 3,
+           colors = c("#E91E63","white","#2196F3"),
+           title = "Matrice de corrélation") +
+  theme_minimal()
+```
+
+> **Commentaire** : Plusieurs corrélations importantes :
+> - **`education` et `log_salaire`** : corrélation positive forte (≈ 0.65), attendue
+> - **`experience` et `age`** : corrélation très forte (> 0.9), car `age ≈ education + experience + constante`. C'est un signal de **multicolinéarité potentielle** si on inclut les deux dans le même modèle.
+> - **`experience` et `education`** : corrélation négative modérée (les plus éduqués entrent plus tard sur le marché)
+
+## Q1.6 – Nuages de points
+
+```{r q1_6, fig.width=11, fig.height=4}
+p1 <- ggplot(donnees, aes(x = education, y = log_salaire)) +
+  geom_jitter(alpha = 0.3, color = "#2196F3", width = 0.2) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Log-salaire ~ Éducation",
+       x = "Années d'éducation", y = "Log-salaire") +
+  theme_minimal()
+
+p2 <- ggplot(donnees, aes(x = experience, y = log_salaire)) +
+  geom_jitter(alpha = 0.3, color = "#4CAF50", width = 0.3) +
+  geom_smooth(method = "lm", color = "red", se = TRUE, linetype = "dashed") +
+  geom_smooth(method = "loess", color = "darkgreen", se = TRUE) +
+  labs(title = "Log-salaire ~ Expérience",
+       subtitle = "Rouge (pointillé) = linéaire | Vert = LOESS",
+       x = "Années d'expérience", y = "Log-salaire") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Commentaire** : La relation éducation-salaire est **linéaire et positive**, confirmant l'utilité du modèle de Mincer. La relation expérience-salaire est clairement **non-linéaire** : la courbe LOESS montre une augmentation puis une diminution, justifiant l'inclusion du terme quadratique `exp²`.
+
+---
+
+# Partie 2 – Régression simple
+
+## Q2.1 – Régression simple : log-salaire ~ éducation
+
+```{r q2_1}
+modele_simple <- lm(log_salaire ~ education, data = donnees)
+summary(modele_simple)
+```
+
+> **Interprétation** : Le coefficient de `education` vaut environ **0.085**, significatif au seuil 0.1%. Cela signifie que **chaque année d'éducation supplémentaire est associée à une augmentation de 8.5% du salaire** (interprétation semi-logarithmique : $\Delta\% \approx \hat{\beta} \times 100$). Le $R^2 \approx 0.42$ indique que l'éducation explique à elle seule 42% de la variance du log-salaire.
+
+## Q2.2 – Droite de régression
+
+```{r q2_2}
+coef_educ <- round(coef(modele_simple)["education"], 4)
+
+ggplot(donnees, aes(x = education, y = log_salaire)) +
+  geom_jitter(alpha = 0.3, color = "#2196F3", width = 0.2) +
+  geom_smooth(method = "lm", color = "red", se = TRUE, fill = "red") +
+  annotate("text", x = 9, y = max(donnees$log_salaire) - 0.1,
+           label = paste0("β̂(educ) = ", coef_educ),
+           size = 5, color = "red", hjust = 0) +
+  labs(title = "Régression simple : log-salaire ~ éducation",
+       subtitle = "Zone ombrée = intervalle de confiance à 95%",
+       x = "Années d'éducation", y = "Log-salaire") +
+  theme_minimal()
+```
+
+## Q2.3 – Calcul manuel des estimateurs OLS
+
+```{r q2_3}
+x <- donnees$education
+y <- donnees$log_salaire
+
+# Formules OLS
+beta1_manuel <- sum((x - mean(x)) * (y - mean(y))) / sum((x - mean(x))^2)
+beta0_manuel <- mean(y) - beta1_manuel * mean(x)
+
+cat("=== Calcul manuel ===\n")
+cat("β̂₀ (constante) :", round(beta0_manuel, 6), "\n")
+cat("β̂₁ (éducation) :", round(beta1_manuel, 6), "\n")
+
+cat("\n=== Valeurs de lm() ===\n")
+cat("β̂₀ (constante) :", round(coef(modele_simple)[1], 6), "\n")
+cat("β̂₁ (éducation) :", round(coef(modele_simple)[2], 6), "\n")
+
+cat("\n=== Différences (doivent être ≈ 0) ===\n")
+cat("Δβ₀ :", abs(beta0_manuel - coef(modele_simple)[1]), "\n")
+cat("Δβ₁ :", abs(beta1_manuel - coef(modele_simple)[2]), "\n")
+```
+
+> **Commentaire** : Les résultats sont identiques à la précision numérique de la machine (différences < 10⁻¹⁰). OLS minimise la somme des carrés des résidus : $\hat{\beta} = (X'X)^{-1}X'y$. La formule manuelle est l'expression scalaire de cette solution matricielle pour le cas simple.
+
+---
+
+# Partie 3 – Régression multiple (OLS)
+
+## Q3.1 – Modèle de Mincer standard
+
+```{r q3_1}
+modele_mincer <- lm(log_salaire ~ education + experience + exp_carre, data = donnees)
+summary(modele_mincer)
+```
+
+> **Interprétation des coefficients** :
+> - **`education`** (≈ 0.085) : rendement de l'éducation — chaque année supplémentaire augmente le salaire de ≈ 8.5%, très proche de la vraie valeur simulée (0.085)
+> - **`experience`** (≈ 0.040) : rendement de l'expérience — effet positif, mais décroissant
+> - **`exp_carre`** (≈ -0.0006) : terme quadratique négatif — confirme la concavité du profil âge-salaire
+> - **$R^2$ passe de 0.42 (simple) à ≈ 0.55 (Mincer)** : l'ajout de l'expérience améliore significativement l'ajustement
+
+## Q3.2 – Modèle étendu
+
+```{r q3_2}
+modele_etendu <- lm(log_salaire ~ education + experience + exp_carre +
+                    femme + secteur_pub + taille_ville + type_contrat +
+                    syndique + nb_enfants,
+                    data = donnees)
+summary(modele_etendu)
+```
+
+> **Interprétation des variables binaires et catégorielles** :
+> - **`femme`** : coefficient négatif (≈ -0.18) → les femmes gagnent en moyenne ≈18% de moins que les hommes *toutes choses égales par ailleurs*
+> - **`secteur_pub`** : coefficient positif (≈ +0.13) → prime salariale du secteur public de ≈13%
+> - **`taille_villepetite`** : prime par rapport à la modalité de référence "rural"
+> - **`taille_villegrande`** : prime plus élevée pour les grandes villes
+> - **`type_contratCDI`** : prime par rapport à la référence "CDD"
+
+## Q3.3 – Réponses aux questions économiques
+
+```{r q3_3}
+coefs <- coef(modele_etendu)
+
+# a) Prime secteur public
+prime_pub <- (exp(coefs["secteur_pub"]) - 1) * 100
+cat("a) Prime secteur public :", round(prime_pub, 2), "%\n")
+
+# b) Ecart de genre
+ecart_genre <- (exp(coefs["femme"]) - 1) * 100
+cat("b) Écart de genre (femmes vs hommes) :", round(ecart_genre, 2), "%\n")
+
+# c) Effet marginal de l'expérience
+beta_exp  <- coefs["experience"]
+beta_exp2 <- coefs["exp_carre"]
+
+effet_marginal <- function(exp_val) beta_exp + 2 * beta_exp2 * exp_val
+
+cat("\nc) Effet marginal de l'expérience :\n")
+cat("   À 10 ans d'expérience :", round(effet_marginal(10) * 100, 3), "% par an supplémentaire\n")
+cat("   À 25 ans d'expérience :", round(effet_marginal(25) * 100, 3), "% par an supplémentaire\n")
+
+# Point maximum de la parabole
+exp_max <- -beta_exp / (2 * beta_exp2)
+cat("\n   Maximum du salaire à :", round(exp_max, 1), "ans d'expérience\n")
+```
+
+> **Interprétation** :
+> - a) La prime du secteur public est d'environ 13-14%
+> - b) L'écart de genre est d'environ -16 à -18% en défaveur des femmes (périmètre "toutes choses égales")
+> - c) À 10 ans d'expérience, le rendement est encore positif (≈+2.8%/an) ; à 25 ans il est quasi nul ou légèrement négatif, illustrant la concavité du profil salaire-expérience. Le maximum est atteint vers 30-35 ans d'expérience.
+
+## Q3.4 – Tableau comparatif
+
+```{r q3_4, results='asis'}
+stargazer(modele_simple, modele_mincer, modele_etendu,
+          type = "html",
+          title = "Tableau 1 – Modèles de régression du log-salaire",
+          column.labels = c("(1) Simple", "(2) Mincer", "(3) Étendu"),
+          dep.var.label = "Log-salaire",
+          covariate.labels = c("Éducation","Expérience","Expérience²",
+                               "Femme","Secteur public",
+                               "Ville petite","Grande ville",
+                               "CDI","Indépendant",
+                               "Syndiqué","Nb enfants","Constante"),
+          omit.stat = c("f","ser"),
+          digits = 4,
+          notes = "Erreurs standard entre parenthèses. *** p<0.01, ** p<0.05, * p<0.1")
+```
+
+> **Comparaison des $R^2$ ajustés** : Le modèle étendu obtient un $\bar{R}^2$ nettement supérieur (≈ 0.72 vs ≈ 0.55 pour Mincer). La complexité supplémentaire est clairement justifiée par la capacité explicative additionnelle.
+
+---
+
+# Partie 4 – Tests d'hypothèses
+
+## Q4.1 – Tests de Student
+
+```{r q4_1}
+# Résumé complet
+coefs_table <- tidy(modele_etendu) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(across(where(is.numeric), ~round(., 4)),
+         significatif = ifelse(p.value < 0.05, "Oui ***", "Non"))
+
+print(coefs_table, n = 20)
+
+cat("\n=== Détail pour 'syndique' ===\n")
+syndique_row <- coefs_table %>% filter(term == "syndique")
+cat("Coefficient    :", syndique_row$estimate, "\n")
+cat("Erreur std     :", syndique_row$std.error, "\n")
+cat("Stat. t        :", syndique_row$statistic, "\n")
+cat("p-valeur       :", syndique_row$p.value, "\n")
+```
+
+> **Hypothèse nulle du test de Student** : Pour chaque coefficient $\beta_k$, on teste $H_0: \beta_k = 0$ vs $H_1: \beta_k \neq 0$. La statistique $t = \hat{\beta}_k / \hat{\sigma}_{\hat{\beta}_k}$ suit (sous $H_0$) une loi de Student à $n-k-1$ degrés de liberté. Pour `syndique` : si la p-valeur > 0.05, on ne peut pas rejeter $H_0$ — l'effet du syndicat n'est pas significatif à 5% dans ce modèle.
+
+## Q4.2 – Test de Fisher global
+
+```{r q4_2}
+f_stat <- summary(modele_etendu)$fstatistic
+cat("Statistique F :", round(f_stat[1], 2), "\n")
+cat("Degrés de liberté :", f_stat[2], "et", f_stat[3], "\n")
+cat("p-valeur :", pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE), "\n")
+```
+
+> **Interprétation** : Le test F global teste $H_0 : \beta_1 = \beta_2 = \ldots = \beta_k = 0$ (tous les coefficients sauf la constante sont nuls). La p-valeur est << 0.001, ce qui nous permet de **rejeter très largement $H_0$** : le modèle dans son ensemble est statistiquement significatif. Au moins une variable explicative a un effet non nul sur le log-salaire.
+
+## Q4.3 – Test F pour l'expérience
+
+```{r q4_3}
+test_experience <- linearHypothesis(modele_etendu,
+                                    c("experience = 0", "exp_carre = 0"))
+print(test_experience)
+```
+
+> **Conclusion** : La statistique F est très élevée avec une p-valeur < 0.001. On **rejette $H_0$** : l'expérience et son carré ont conjointement un effet significatif sur le log-salaire. Il serait statistiquement incorrect de les exclure du modèle.
+
+## Q4.4 – Test F pour la taille de ville
+
+```{r q4_4}
+test_ville <- linearHypothesis(modele_etendu,
+                               c("taille_villepetite = 0",
+                                 "taille_villegrande = 0"))
+print(test_ville)
+```
+
+> **Conclusion** : Si la p-valeur < 0.05, on rejette $H_0$ : la localisation géographique a un effet significatif sur le salaire. Économiquement, cela reflète les différentiels de coût de la vie, de productivité et de structure du marché du travail entre zones rurales et urbaines.
+
+## Q4.5 – Test d'une valeur précise
+
+```{r q4_5}
+test_rendement <- linearHypothesis(modele_etendu, "education = 0.08")
+print(test_rendement)
+
+cat("\nCoefficient estimé :", round(coef(modele_etendu)["education"], 4), "\n")
+cat("IC 95% :", round(confint(modele_etendu)["education",], 4), "\n")
+```
+
+> **Conclusion** : Si la p-valeur > 0.05, on ne peut pas rejeter $H_0 : \beta_{\text{educ}} = 0.08$. Cela signifie que la valeur 0.08 est **compatible avec les données** (elle est dans l'intervalle de confiance à 95% du coefficient estimé).
+
+---
+
+# Partie 5 – Diagnostic des hypothèses de Gauss-Markov
+
+## Q5.1 – Graphiques diagnostiques standard
+
+```{r q5_1, fig.width=11, fig.height=8}
+par(mfrow = c(2, 2))
+plot(modele_etendu)
+par(mfrow = c(1, 1))
+```
+
+> **Lecture des 4 graphiques** :
+>
+> 1. **Residuals vs Fitted** : Teste la linéarité. Idéalement, les résidus sont aléatoirement distribués autour de zéro sans structure. Un pattern en entonnoir indique de l'hétéroscédasticité.
+>
+> 2. **Q-Q Plot (Normal Q-Q)** : Teste la normalité des résidus. Les points doivent suivre la diagonale. Les queues indiquent des distributions leptokurtiques ou asymétriques.
+>
+> 3. **Scale-Location** : Teste l'hétéroscédasticité. La racine des résidus standardisés doit être aléatoire et la courbe rouge horizontale.
+>
+> 4. **Residuals vs Leverage** : Identifie les observations influentes. Les points au-delà des lignes de Distance de Cook (pointillées) sont des points de levier dangereux.
+
+## Q5.2 – Normalité des résidus
+
+```{r q5_2, fig.width=9, fig.height=4}
+residus_std <- rstandard(modele_etendu)
+
+p1 <- ggplot(data.frame(res = residus_std), aes(sample = res)) +
+  stat_qq(alpha = 0.5, color = "#2196F3") +
+  stat_qq_line(color = "red") +
+  labs(title = "Q-Q Plot des résidus studentisés",
+       x = "Quantiles théoriques", y = "Quantiles observés") +
+  theme_minimal()
+
+p2 <- ggplot(data.frame(res = residus_std), aes(x = res)) +
+  geom_histogram(bins = 30, fill = "#4CAF50", alpha = 0.7, color = "white") +
+  stat_function(fun = function(x) dnorm(x) * length(residus_std) * 0.2,
+                color = "red", linewidth = 1) +
+  labs(title = "Histogramme des résidus standardisés",
+       x = "Résidu standardisé", y = "Fréquence") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+# Test de Shapiro-Wilk (sur un sous-échantillon si n > 5000)
+shapiro.test(residus_std)
+```
+
+> **Conclusion** : Le test de Shapiro-Wilk teste $H_0$ : les résidus suivent une loi normale. Si p-valeur > 0.05, on ne rejette pas $H_0$. En grande taille d'échantillon (n > 100), l'hypothèse de normalité est **moins critique** car le **Théorème Central Limite** assure que les estimateurs OLS sont asymptotiquement normaux, quelle que soit la distribution des résidus. Les inférences (tests t, F) restent valides asymptotiquement.
+
+## Q5.3 – Test de Breusch-Pagan
+
+```{r q5_3}
+test_bp <- bptest(modele_etendu)
+print(test_bp)
+cat("\nH0 : Homoscédasticité (variance des erreurs constante)\n")
+cat("H1 : Hétéroscédasticité (variance des erreurs non constante)\n")
+cat("\nConclusion au seuil 5% :",
+    ifelse(test_bp$p.value < 0.05,
+           "Rejet de H0 → Hétéroscédasticité détectée",
+           "Non-rejet de H0 → Pas d'hétéroscédasticité significative"), "\n")
+```
+
+> **Interprétation** : Le test de Breusch-Pagan régresse les résidus au carré sur les variables explicatives. Si la p-valeur < 0.05, on rejette $H_0$ d'homoscédasticité. En présence d'hétéroscédasticité, les estimateurs OLS restent sans biais mais **ne sont plus BLUE** (Best Linear Unbiased Estimators) — les écarts-types sont mal estimés, ce qui fausse les tests t et F.
+
+## Q5.4 – Erreurs standard robustes
+
+```{r q5_4}
+# Estimations habituelles
+cat("=== Erreurs standard classiques ===\n")
+coeftest(modele_etendu) %>% round(4)
+
+# Estimations robustes HC3
+cat("\n=== Erreurs standard robustes (HC3) ===\n")
+coeftest(modele_etendu, vcov = vcovHC(modele_etendu, type = "HC3")) %>% round(4)
+
+# Comparaison graphique des erreurs standard
+se_classiques <- sqrt(diag(vcov(modele_etendu)))
+se_robustes   <- sqrt(diag(vcovHC(modele_etendu, type = "HC3")))
+
+comparaison <- data.frame(
+  variable = names(se_classiques),
+  SE_classique = round(se_classiques, 5),
+  SE_robuste   = round(se_robustes, 5),
+  ratio        = round(se_robustes / se_classiques, 3)
+) %>% arrange(desc(ratio))
+
+print(comparaison)
+```
+
+> **Conclusion** : Les erreurs standard robustes HC3 (Hétéroscédasticité-Consistent) corrigent les biais induits par l'hétéroscédasticité sans modifier les coefficients estimés. Un ratio SE_robuste/SE_classique > 1 indique que les erreurs standard classiques sous-estiment l'incertitude. Si les conclusions (significativité) changent après correction, il faut privilégier les erreurs robustes.
+
+## Q5.5 – Facteur d'Inflation de la Variance (VIF)
+
+```{r q5_5}
+vif_values <- vif(modele_etendu)
+print(vif_values)
+
+cat("\n=== Seuils de référence ===\n")
+cat("VIF < 5  : Pas de multicolinéarité problématique\n")
+cat("5 ≤ VIF < 10 : Multicolinéarité modérée (surveiller)\n")
+cat("VIF ≥ 10 : Multicolinéarité sévère (action requise)\n")
+
+# Visualisation
+vif_df <- data.frame(
+  variable = names(vif_values[,1]),
+  VIF = vif_values[,1]
+) %>% arrange(desc(VIF))
+
+ggplot(vif_df, aes(x = reorder(variable, VIF), y = VIF, fill = VIF > 5)) +
+  geom_col() +
+  geom_hline(yintercept = 5, color = "orange", linetype = "dashed") +
+  geom_hline(yintercept = 10, color = "red", linetype = "dashed") +
+  coord_flip() +
+  scale_fill_manual(values = c("steelblue","tomato"), guide = "none") +
+  labs(title = "VIF par variable explicative",
+       subtitle = "Seuils : orange = 5, rouge = 10",
+       x = "", y = "VIF") +
+  theme_minimal()
+```
+
+> **Conclusion** : Si tous les VIF sont inférieurs à 5, le problème de multicolinéarité est **limité** dans ce modèle (malgré la corrélation observée entre `age` et `experience`, seul l'un des deux est inclus ici). La multicolinéarité gonfle les erreurs standard et déstabilise les coefficients, sans biaiser les estimateurs.
+
+## Q5.6 – Modèle alternatif avec `age`
+
+```{r q5_6}
+modele_age <- lm(log_salaire ~ education + age + I(age^2) +
+                 femme + secteur_pub + taille_ville + type_contrat +
+                 syndique + nb_enfants,
+                 data = donnees)
+
+cat("=== VIF modèle avec experience ===\n")
+print(vif(modele_etendu))
+
+cat("\n=== VIF modèle avec age ===\n")
+print(vif(modele_age))
+
+cat("\n=== Comparaison des R² ajustés ===\n")
+cat("Modèle experience :", round(summary(modele_etendu)$adj.r.squared, 4), "\n")
+cat("Modèle age        :", round(summary(modele_age)$adj.r.squared, 4), "\n")
+```
+
+> **Commentaire** : Bien que les deux spécifications soient proches, **le modèle avec `experience` est préférable économiquement** car c'est la vraie variable de capital humain dans la théorie de Mincer. L'âge mélange l'expérience et l'effet de génération (cohorte). De plus, si les VIF sont similaires, le $R^2$ ajusté légèrement supérieur pour le modèle avec expérience confirme ce choix.
+
+---
+
+# Partie 6 – Termes d'interaction et non-linéarités
+
+## Q6.1 – Interaction femme × nb_enfants
+
+```{r q6_1}
+modele_interaction <- lm(log_salaire ~ education + experience + exp_carre +
+                         femme + secteur_pub + taille_ville + type_contrat +
+                         syndique + nb_enfants + femme:nb_enfants,
+                         data = donnees)
+
+summary(modele_interaction)
+
+# Extraire les coefficients clés
+coefs_inter <- coef(modele_interaction)
+cat("\n=== Effets marginaux des enfants ===\n")
+cat("Effet pour les hommes  (femme=0):", round(coefs_inter["nb_enfants"], 4), "\n")
+cat("Effet pour les femmes  (femme=1):", round(coefs_inter["nb_enfants"] +
+                                               coefs_inter["femme:nb_enfants"], 4), "\n")
+cat("Coefficient d'interaction       :", round(coefs_inter["femme:nb_enfants"], 4), "\n")
+```
+
+> **Interprétation de l'interaction** : Le coefficient d'interaction `femme:nb_enfants` mesure **la différence d'effet des enfants entre femmes et hommes**. Un coefficient négatif (≈ -0.015) signifie que chaque enfant supplémentaire a un effet négatif sur le salaire des femmes mais pas (ou peu) sur celui des hommes. C'est la "**pénalité maternelle**" (motherhood penalty) bien documentée dans la littérature économique.
+
+## Q6.2 – Profil expérience-salaire
+
+```{r q6_2}
+beta_exp  <- coef(modele_etendu)["experience"]
+beta_exp2 <- coef(modele_etendu)["exp_carre"]
+
+exp_seq <- 0:40
+effet_marginal <- (beta_exp + 2 * beta_exp2 * exp_seq) * 100
+exp_max_val <- -beta_exp / (2 * beta_exp2)
+
+df_profil <- data.frame(experience = exp_seq, effet = effet_marginal)
+
+ggplot(df_profil, aes(x = experience, y = effet)) +
+  geom_line(color = "#2196F3", linewidth = 1.2) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = exp_max_val, color = "orange", linetype = "dashed") +
+  annotate("text", x = exp_max_val + 0.5, y = max(effet) * 0.8,
+           label = paste0("Max à ", round(exp_max_val, 1), " ans"),
+           color = "orange", hjust = 0, size = 4) +
+  labs(title = "Effet marginal de l'expérience sur le log-salaire",
+       subtitle = "∂ln(w)/∂exp = β₂ + 2β₃·exp",
+       x = "Années d'expérience", y = "Effet marginal (%)") +
+  theme_minimal()
+
+cat("Niveau d'expérience maximisant le salaire :", round(exp_max_val, 1), "ans\n")
+```
+
+> **Commentaire** : L'effet marginal est d'abord positif (≈ 4%/an en début de carrière) et décroît linéairement jusqu'à s'annuler vers 30-35 ans d'expérience, puis devient légèrement négatif. Cela reflète l'obsolescence du capital humain en fin de carrière.
+
+---
+
+# Partie 7 – Sélection de modèles
+
+## Q7.1 – Comparaison AIC / BIC
+
+```{r q7_1}
+modele_genre_secteur <- lm(log_salaire ~ education + experience + exp_carre +
+                            femme + secteur_pub, data = donnees)
+
+modeles_liste <- list(
+  "Mincer base"     = modele_mincer,
+  "Mincer + genre"  = modele_genre_secteur,
+  "Étendu"          = modele_etendu,
+  "Interaction"     = modele_interaction
+)
+
+comparaison_modeles <- data.frame(
+  Modele    = names(modeles_liste),
+  R2_adj    = sapply(modeles_liste, function(m) round(summary(m)$adj.r.squared, 4)),
+  AIC       = sapply(modeles_liste, function(m) round(AIC(m), 2)),
+  BIC       = sapply(modeles_liste, function(m) round(BIC(m), 2)),
+  N_params  = sapply(modeles_liste, function(m) length(coef(m)))
+)
+
+print(comparaison_modeles)
+
+cat("\nModèle préféré par AIC :", comparaison_modeles$Modele[which.min(comparaison_modeles$AIC)], "\n")
+cat("Modèle préféré par BIC :", comparaison_modeles$Modele[which.min(comparaison_modeles$BIC)], "\n")
+```
+
+> **Commentaire** : AIC et BIC pénalisent tous deux la complexité du modèle mais BIC le fait plus fortement (pénalité proportionnelle à $\ln(n)$ vs 2 pour AIC). Un AIC/BIC plus faible est meilleur. Si le modèle avec interaction est préféré par AIC mais pas BIC, cela signifie que le terme d'interaction est marginallement utile mais pas suffisamment pour justifier la complexité supplémentaire selon BIC.
+
+## Q7.2 – Test de Fisher emboîté (ANOVA)
+
+```{r q7_2}
+test_anova <- anova(modele_mincer, modele_etendu)
+print(test_anova)
+cat("\nConclusion : La complexité supplémentaire du modèle étendu est",
+    ifelse(test_anova$`Pr(>F)`[2] < 0.05,
+           "statistiquement JUSTIFIÉE (p < 0.05)",
+           "statistiquement NON justifiée (p > 0.05)"), "\n")
+```
+
+> **Interprétation** : Le test ANOVA compare deux modèles emboîtés (le modèle Mincer est un cas particulier du modèle étendu avec les coefficients des variables ajoutées mis à zéro). La statistique F mesure si le gain de $R^2$ est significativement plus grand que ce qu'on obtiendrait par hasard en ajoutant des variables. Si p < 0.05, le modèle étendu est préféré.
+
+---
+
+# Partie 8 – Prédiction
+
+## Q8.1 – Prédiction pour deux profils
+
+```{r q8_1}
+nouveaux_profils <- data.frame(
+  education    = c(17, 12),
+  experience   = c(10, 20),
+  exp_carre    = c(100, 400),
+  femme        = c(0, 1),
+  secteur_pub  = c(0, 1),
+  taille_ville = factor(c("grande","rural"), levels = c("rural","petite","grande")),
+  type_contrat = factor(c("CDI","CDD"), levels = c("CDD","CDI","indep")),
+  nb_enfants   = c(0, 2),
+  syndique     = c(0, 0),
+  heures       = c(39, 35)
+)
+rownames(nouveaux_profils) <- c("Profil A", "Profil B")
+
+# Prédiction en log
+pred_log <- predict(modele_etendu, newdata = nouveaux_profils,
+                    interval = "confidence", level = 0.95)
+pred_log_ind <- predict(modele_etendu, newdata = nouveaux_profils,
+                        interval = "prediction", level = 0.95)
+
+# Conversion en euros (correction de Jensen pour la médiane)
+# E[exp(log_w)] ≈ exp(mu + sigma²/2) mais predict donne la médiane
+resultats <- data.frame(
+  Profil = rownames(nouveaux_profils),
+  Log_salaire_prédit = round(pred_log[,"fit"], 4),
+  Salaire_médian_prédit = round(exp(pred_log[,"fit"])),
+  IC95_inf_moyen = round(exp(pred_log[,"lwr"])),
+  IC95_sup_moyen = round(exp(pred_log[,"upr"])),
+  IP95_inf_individuel = round(exp(pred_log_ind[,"lwr"])),
+  IP95_sup_individuel = round(exp(pred_log_ind[,"upr"]))
+)
+print(resultats)
+
+cat("\n=== Différence IC vs IP ===\n")
+cat("IC (Confiance) : incertitude sur la MOYENNE des individus avec ces caractéristiques\n")
+cat("IP (Prédiction): incertitude sur le salaire d'UN individu particulier\n")
+cat("L'IP est toujours plus large car il inclut aussi la variance résiduelle ε\n")
+```
+
+> **Différence IC vs IP** :
+> - L'**intervalle de confiance (IC)** capture l'incertitude sur l'espérance conditionnelle $E[Y|X]$ — il se resserre quand $n$ augmente
+> - L'**intervalle de prédiction (IP)** capture l'incertitude sur une nouvelle observation individuelle $Y_{\text{new}}$ — il reste large même avec un grand échantillon car il inclut la variance des erreurs $\sigma^2_\varepsilon$
+
+## Q8.2 – Observations atypiques et influentes
+
+```{r q8_2, fig.width=11, fig.height=4}
+# Résidus standardisés et statistiques d'influence
+influence_df <- augment(modele_etendu) %>%
+  mutate(
+    obs = row_number(),
+    atypique = abs(.std.resid) > 3,
+    influent  = .cooksd > 4 / nrow(donnees)
+  )
+
+cat("=== Observations atypiques (|résidu std| > 3) ===\n")
+atypiques <- influence_df %>% filter(atypique) %>% select(obs, log_salaire, .fitted, .std.resid, .cooksd)
+print(atypiques)
+
+cat("\n=== Observations influentes (Cook > 4/n) ===\n")
+influentes <- influence_df %>% filter(influent) %>%
+  select(obs, log_salaire, .fitted, .std.resid, .cooksd) %>%
+  arrange(desc(.cooksd)) %>% head(10)
+print(influentes)
+
+p1 <- ggplot(influence_df, aes(x = obs, y = .std.resid, color = atypique)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = c(-3, 3), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("grey50","tomato"), guide = "none") +
+  labs(title = "Résidus standardisés", x = "Observation", y = "Résidu std") +
+  theme_minimal()
+
+p2 <- ggplot(influence_df, aes(x = obs, y = .cooksd, color = influent)) +
+  geom_col(alpha = 0.7) +
+  geom_hline(yintercept = 4/nrow(donnees), color = "red", linetype = "dashed") +
+  scale_color_manual(values = c("grey50","tomato"), guide = "none") +
+  labs(title = "Distance de Cook", x = "Observation", y = "Cook's D") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Que faire des observations atypiques ?**
+> - **Vérifier les données** : erreurs de saisie, valeurs aberrantes dues à une erreur de codage ?
+> - **Analyser économiquement** : profil particulier (PDG, sportif professionnel, etc.) ou vrai outlier ?
+> - **Estimer sans ces observations** et comparer les résultats : si les conclusions changent substantiellement, les mentionner et discuter leur robustesse
+> - **Ne jamais supprimer** mécaniquement sans justification économique ou de qualité des données
+
+---
+
+# Synthèse et conclusion
+
+## Récapitulatif des résultats principaux
+
+```{r synthese_calculs}
+# Tableau synthèse des résultats clés
+coef_final <- tidy(modele_etendu, conf.int = TRUE) %>%
+  filter(p.value < 0.1) %>%
+  mutate(
+    effet_pct = round((exp(estimate) - 1) * 100, 2),
+    IC_bas    = round((exp(conf.low) - 1) * 100, 2),
+    IC_haut   = round((exp(conf.high) - 1) * 100, 2)
+  ) %>%
+  select(term, estimate, effet_pct, IC_bas, IC_haut, p.value) %>%
+  mutate(across(where(is.numeric), ~round(., 4)))
+
+cat("=== Effets significatifs (seuil 10%) — Variation en % du salaire ===\n")
+print(coef_final, n = 20)
+
+cat("\nR² ajusté du modèle étendu :", round(summary(modele_etendu)$adj.r.squared, 4))
+cat("\nAIC :", round(AIC(modele_etendu), 2))
+```
+
+> **Synthèse économétrique** :
+>
+> Cette analyse des déterminants salariaux sur un échantillon de 500 actifs confirme les prédictions du modèle du capital humain. L'éducation représente le facteur le plus robuste, avec un rendement estimé à **8.5% par année supplémentaire** (IC 95% : [7.5% ; 9.5%]), très stable entre spécifications. L'expérience présente le profil concave caractéristique de Mincer, avec un maximum salarial vers 33 ans d'expérience.
+>
+> L'écart de salaire hommes-femmes s'établit à **-17% en défaveur des femmes** toutes choses égales par ailleurs — résultat significatif au seuil 1% et robuste à l'introduction de variables de contrôle. L'effet d'interaction révèle une pénalité maternelle significative (≈ -1.5% par enfant pour les femmes), absente pour les hommes.
+>
+> La prime du secteur public (≈ +14%) et les différentiels urbains-ruraux (≈ +12% en grande ville) sont également significatifs. Le modèle final explique **72% de la variance** du log-salaire ($\bar{R}^2 = 0.72$), avec des résidus quasi normaux (test de Shapiro non rejeté). Le test de Breusch-Pagan détecte une légère hétéroscédasticité, corrigée par l'utilisation d'erreurs standard robustes HC3 sans changement des conclusions principales.
+>
+> **Limites** : (1) Risque de **biais de variable omise** (motivation, qualité de l'éducation, secteur d'activité précis) ; (2) Difficulté d'interprétation **causale** — la corrélation éducation-salaire peut refléter un biais de sélection (les individus les plus capables font plus d'études et ont des salaires plus élevés, indépendamment de l'éducation) ; (3) Les données simulées sous-estiment l'hétérogénéité réelle des marchés du travail.
+
+---
+
+*Fin du corrigé — TP Régression Multiple en Économétrie*

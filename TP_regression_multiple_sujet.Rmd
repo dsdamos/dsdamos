@@ -1,0 +1,428 @@
+---
+title: "TP – Régression Multiple en Économétrie"
+subtitle: "Les déterminants des salaires : une application de l'équation de Mincer"
+author: "Étudiant(e) : ___________________________"
+date: "Session 2025-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4)
+```
+
+---
+
+# Présentation du TP
+
+## Contexte économique
+
+L'**équation de Mincer** (1974) est l'un des modèles les plus estimés en économie du travail. Elle modélise le logarithme du salaire comme fonction de l'éducation, de l'expérience et de l'expérience au carré :
+
+$$\ln(w_i) = \alpha + \beta_1 \cdot \text{educ}_i + \beta_2 \cdot \text{exp}_i + \beta_3 \cdot \text{exp}_i^2 + \varepsilon_i$$
+
+Ce TP s'appuie sur une base de données simulée de **500 individus actifs** et vous guide à travers toutes les étapes d'une analyse économétrique rigoureuse par régression multiple OLS.
+
+## Objectifs pédagogiques
+
+À l'issue de ce TP, vous serez capable de :
+
+1. Explorer et préparer une base de données pour la régression
+2. Estimer et interpréter un modèle de régression multiple (OLS)
+3. Tester la significativité des coefficients et du modèle global
+4. Détecter et corriger les violations des hypothèses de Gauss-Markov
+5. Comparer et sélectionner des modèles alternatifs
+6. Réaliser des prédictions et en mesurer l'incertitude
+
+## Packages nécessaires
+
+```{r packages, eval=FALSE}
+# Installer les packages si nécessaire
+install.packages(c("tidyverse", "car", "lmtest", "sandwich",
+                   "stargazer", "ggcorrplot", "broom", "GGally"))
+```
+
+```{r charger_packages}
+library(tidyverse)    # manipulation de données et visualisation
+library(car)          # tests de régression (VIF, linearHypothesis)
+library(lmtest)       # tests d'hypothèses (Breusch-Pagan, etc.)
+library(sandwich)     # erreurs standard robustes
+library(stargazer)    # tableaux de régression
+library(ggcorrplot)   # matrice de corrélation graphique
+library(broom)        # tidying des résultats de modèles
+library(GGally)       # ggpairs
+```
+
+## Chargement des données
+
+```{r charger_donnees}
+# Générer d'abord les données via le script generer_donnees.R
+# source("generer_donnees.R")
+
+donnees <- read.csv("salaires.csv", stringsAsFactors = FALSE)
+```
+
+### Description des variables
+
+| Variable       | Type        | Description                                      |
+|:---------------|:------------|:-------------------------------------------------|
+| `salaire`      | Numérique   | Salaire mensuel net en euros                     |
+| `log_salaire`  | Numérique   | Logarithme naturel du salaire                    |
+| `education`    | Numérique   | Années d'éducation (8 à 22 ans)                  |
+| `experience`   | Numérique   | Années d'expérience professionnelle              |
+| `exp_carre`    | Numérique   | Expérience au carré (terme de Mincer)            |
+| `age`          | Numérique   | Âge de l'individu                                |
+| `femme`        | Binaire     | 1 = femme, 0 = homme                             |
+| `secteur_pub`  | Binaire     | 1 = secteur public, 0 = secteur privé            |
+| `taille_ville` | Catégorielle| "rural", "petite", "grande" (ville)             |
+| `type_contrat` | Catégorielle| "CDI", "CDD", "indep" (indépendant)             |
+| `nb_enfants`   | Numérique   | Nombre d'enfants                                 |
+| `syndique`     | Binaire     | 1 = syndiqué, 0 = non syndiqué                  |
+| `heures`       | Numérique   | Heures travaillées par semaine                   |
+
+---
+
+# Partie 1 – Exploration des données
+
+## Structure et statistiques descriptives
+
+**Question 1.1** : Affichez les dimensions de la base, les 6 premières lignes, et le type de chaque variable. Convertissez les variables catégorielles (`taille_ville`, `type_contrat`) en facteurs avec des niveaux appropriés (référence : "rural" et "CDD").
+
+```{r q1_1}
+# Votre code ici
+
+```
+
+**Question 1.2** : Calculez les statistiques descriptives (moyenne, médiane, écart-type, min, max, quantiles 25% et 75%) pour les variables numériques. Combien d'hommes et de femmes compte l'échantillon ? Quelle est la répartition par type de contrat et par taille de ville ?
+
+```{r q1_2}
+# Votre code ici
+
+```
+
+## Visualisation de la variable dépendante
+
+**Question 1.3** : Tracez deux histogrammes côte à côte : la distribution du `salaire` brut et celle du `log_salaire`. Concluez sur la forme de la distribution et justifiez le choix de la variable dépendante en log pour la régression.
+
+```{r q1_3, fig.width=10}
+# Votre code ici
+
+```
+
+**Question 1.4** : Représentez la distribution du salaire (en log) séparément pour les hommes et les femmes à l'aide d'un graphique en densité (`geom_density`). Ajoutez des lignes verticales pour les médianes. Commentez l'écart observé.
+
+```{r q1_4}
+# Votre code ici
+
+```
+
+## Matrice de corrélation et nuages de points
+
+**Question 1.5** : Calculez et affichez graphiquement la matrice de corrélation entre les variables numériques continues (`log_salaire`, `education`, `experience`, `age`, `heures`). Identifiez les paires fortement corrélées et discutez des implications potentielles pour la régression.
+
+```{r q1_5}
+# Votre code ici
+
+```
+
+**Question 1.6** : Créez deux graphiques de dispersion (avec droite de régression) :
+
+- `log_salaire` en fonction de `education`
+- `log_salaire` en fonction de `experience`
+
+Pour le second, ajoutez également une courbe de tendance non linéaire (LOESS). Que remarquez-vous sur la forme de la relation ?
+
+```{r q1_6, fig.width=10}
+# Votre code ici
+
+```
+
+---
+
+# Partie 2 – Régression simple (rappel)
+
+**Question 2.1** : Estimez le modèle de **régression simple** du log-salaire sur l'éducation uniquement. Affichez le résumé complet (`summary()`). Interprétez le coefficient de l'éducation en termes économiques (rendement marginal).
+
+```{r q2_1}
+# Votre code ici
+
+```
+
+**Question 2.2** : Tracez le nuage de points `log_salaire ~ education` avec la droite de régression estimée et les intervalles de confiance à 95%. Ajoutez le titre, les axes et une annotation du coefficient estimé.
+
+```{r q2_2}
+# Votre code ici
+
+```
+
+**Question 2.3** : Calculez **manuellement** (sans utiliser `lm()`) les estimateurs OLS $\hat{\beta}_0$ et $\hat{\beta}_1$ avec les formules :
+
+$$\hat{\beta}_1 = \frac{\sum(x_i - \bar{x})(y_i - \bar{y})}{\sum(x_i - \bar{x})^2} \qquad \hat{\beta}_0 = \bar{y} - \hat{\beta}_1 \bar{x}$$
+
+Vérifiez que vos résultats coïncident avec ceux de `lm()`.
+
+```{r q2_3}
+# Votre code ici
+
+```
+
+---
+
+# Partie 3 – Régression multiple (OLS)
+
+## Modèle de Mincer de base
+
+**Question 3.1** : Estimez le **modèle de Mincer standard** :
+
+$$\ln(w_i) = \beta_0 + \beta_1 \cdot \text{educ}_i + \beta_2 \cdot \text{exp}_i + \beta_3 \cdot \text{exp}^2_i + \varepsilon_i$$
+
+Affichez le résumé. Comment évoluent le $R^2$ et les coefficients par rapport à la régression simple ? Interprétez chaque coefficient.
+
+```{r q3_1}
+# Votre code ici
+
+```
+
+## Modèle étendu
+
+**Question 3.2** : Estimez un **modèle étendu** en ajoutant les variables : `femme`, `secteur_pub`, `taille_ville`, `type_contrat`, `syndique`, `nb_enfants`. Veillez à ce que les variables catégorielles soient bien des facteurs. Interprétez les coefficients des variables binaires et des modalités de référence.
+
+```{r q3_2}
+# Votre code ici
+
+```
+
+**Question 3.3** : À partir du modèle étendu, répondez aux questions suivantes :
+
+a. Toutes choses égales par ailleurs, quelle est la prime salariale estimée (en %) associée au fait d'être dans le secteur public ?
+b. Quel est l'écart de salaire estimé (en %) entre hommes et femmes ?
+c. Quel est l'effet d'une année supplémentaire d'expérience sur le log-salaire, pour un individu ayant 10 ans d'expérience ? Et pour 25 ans ?
+
+> **Rappel** : Pour une variable $x$ en log, le rendement marginal de l'expérience vaut : $\frac{\partial \ln(w)}{\partial \text{exp}} = \beta_2 + 2\beta_3 \cdot \text{exp}$
+
+```{r q3_3}
+# Votre code ici
+
+```
+
+## Tableau comparatif des modèles
+
+**Question 3.4** : Produisez un **tableau de régression** comparant les 3 modèles (simple, Mincer, étendu) avec la fonction `stargazer()` ou `broom::tidy()`. Comparez les $R^2$ ajustés. La complexité supplémentaire du modèle étendu est-elle justifiée ?
+
+```{r q3_4, results='asis'}
+# Votre code ici
+
+```
+
+---
+
+# Partie 4 – Tests d'hypothèses
+
+## Test de Student (significativité individuelle)
+
+**Question 4.1** : Pour le modèle étendu, identifiez les coefficients **non significatifs** au seuil de 5%. Quelle est l'hypothèse nulle testée par le test de Student pour chaque coefficient ? Reportez la statistique $t$ et la p-valeur du coefficient `syndique`.
+
+```{r q4_1}
+# Votre code ici
+
+```
+
+## Test de Fisher (significativité globale)
+
+**Question 4.2** : Interprétez la **statistique de Fisher** (F-statistic) reportée dans le résumé du modèle étendu. Quelle est l'hypothèse nulle de ce test ? Concluez sur la significativité globale du modèle.
+
+```{r q4_2}
+# Votre code ici
+
+```
+
+## Test de Fisher pour des restrictions linéaires
+
+**Question 4.3** : Testez conjointement l'hypothèse que **l'expérience et son carré n'ont aucun effet** sur le log-salaire ($H_0 : \beta_{\text{exp}} = \beta_{\text{exp}^2} = 0$) à l'aide de la fonction `linearHypothesis()` du package `car`. Concluez.
+
+```{r q4_3}
+# Votre code ici
+
+```
+
+**Question 4.4** : Testez si l'effet des **variables de localisation** (`taille_ville`) est conjointement nul. Interprétez le résultat économiquement.
+
+```{r q4_4}
+# Votre code ici
+
+```
+
+## Test de l'égalité des rendements
+
+**Question 4.5** : Un économiste affirme que **le rendement de l'éducation est exactement égal à 8%** ($\beta_{\text{educ}} = 0.08$). Testez cette hypothèse avec `linearHypothesis()`. Concluez au seuil 5%.
+
+```{r q4_5}
+# Votre code ici
+
+```
+
+---
+
+# Partie 5 – Diagnostic des hypothèses de Gauss-Markov
+
+## Analyse des résidus
+
+**Question 5.1** : À partir du modèle étendu, tracez les **4 graphiques diagnostiques** standard de R (`plot(modele, which = 1:4)`). Pour chaque graphique, expliquez ce qu'il teste et ce que vous observez.
+
+```{r q5_1, fig.width=10, fig.height=8}
+# Votre code ici
+
+```
+
+## Normalité des résidus
+
+**Question 5.2** : Tracez un **Q-Q plot** des résidus studentisés et effectuez un **test de Shapiro-Wilk** (ou Jarque-Bera). Concluez sur la normalité des résidus. Est-ce une hypothèse critique en grande taille d'échantillon ? Pourquoi ?
+
+```{r q5_2}
+# Votre code ici
+
+```
+
+## Hétéroscédasticité
+
+**Question 5.3** : Effectuez le **test de Breusch-Pagan** (fonction `bptest()` du package `lmtest`). Énoncez clairement $H_0$ et $H_1$. Concluez au seuil 5%.
+
+```{r q5_3}
+# Votre code ici
+
+```
+
+**Question 5.4** : Si le test de Breusch-Pagan est rejeté, ré-estimez le modèle étendu avec des **erreurs standard robustes à l'hétéroscédasticité** (type HC3, via `coeftest()` + `vcovHC()`). Comparez les erreurs standard et les p-valeurs avant/après correction. Les conclusions changent-elles ?
+
+```{r q5_4}
+# Votre code ici
+
+```
+
+## Multicolinéarité
+
+**Question 5.5** : Calculez le **Facteur d'Inflation de la Variance (VIF)** pour chaque variable du modèle étendu avec la fonction `vif()`. Quels seuils sont généralement retenus ? Y a-t-il un problème de multicolinéarité dans ce modèle ?
+
+```{r q5_5}
+# Votre code ici
+
+```
+
+**Question 5.6** : La variable `age` est fortement corrélée avec `experience`. Estimez un modèle alternatif en remplaçant `experience` et `exp_carre` par `age` et `age^2`. Comparez les VIF et les $R^2$ ajustés. Quel modèle préférez-vous et pourquoi ?
+
+```{r q5_6}
+# Votre code ici
+
+```
+
+---
+
+# Partie 6 – Termes d'interaction et non-linéarités
+
+**Question 6.1** : Ajoutez au modèle étendu un **terme d'interaction** entre `femme` et `nb_enfants`. Ce terme permet de tester si l'effet des enfants sur le salaire diffère selon le genre. Estimez ce modèle et interprétez le coefficient d'interaction.
+
+```{r q6_1}
+# Votre code ici
+
+```
+
+**Question 6.2** : Calculez et représentez graphiquement l'**effet marginal de l'expérience** sur le log-salaire (d'après le modèle étendu) pour des valeurs d'expérience allant de 0 à 40 ans. À quel niveau d'expérience le salaire atteint-il son maximum toutes choses égales par ailleurs ?
+
+```{r q6_2}
+# Votre code ici
+
+```
+
+---
+
+# Partie 7 – Sélection de modèles
+
+**Question 7.1** : Comparez les modèles suivants à l'aide du **critère d'Akaike (AIC)** et du **critère bayésien de Schwarz (BIC)**. Quel modèle est préféré par chaque critère ?
+
+- Modèle 1 : Mincer de base (`education + experience + exp_carre`)
+- Modèle 2 : Mincer + genre et secteur
+- Modèle 3 : Modèle étendu complet
+- Modèle 4 : Modèle étendu + interaction `femme × nb_enfants`
+
+```{r q7_1}
+# Votre code ici
+
+```
+
+**Question 7.2** : Effectuez un **test de Fisher emboîté** (ANOVA) entre le modèle de Mincer et le modèle étendu. La complexité supplémentaire est-elle statistiquement justifiée ?
+
+```{r q7_2}
+# Votre code ici
+
+```
+
+---
+
+# Partie 8 – Prédiction
+
+**Question 8.1** : À partir du modèle étendu, prédisez le **salaire mensuel** (en euros, pas en log) pour les deux profils suivants :
+
+| Profil       | educ | exp | femme | secteur_pub | taille_ville | type_contrat | nb_enfants | syndique | heures |
+|:-------------|:----:|:---:|:-----:|:-----------:|:------------:|:------------:|:----------:|:--------:|:------:|
+| Profil A     | 17   | 10  | 0     | 0           | grande       | CDI          | 0          | 0        | 39     |
+| Profil B     | 12   | 20  | 1     | 1           | rural        | CDD          | 2          | 0        | 35     |
+
+Reportez également les **intervalles de confiance à 95%** sur la prédiction moyenne et les intervalles de prédiction individuelle. Expliquez la différence entre les deux.
+
+```{r q8_1}
+# Votre code ici
+
+```
+
+**Question 8.2** : Calculez les **résidus standardisés** du modèle étendu. Identifiez les observations potentiellement **atypiques** (résidu standardisé > 3 en valeur absolue) et les points **leviers** influents (distance de Cook > 4/n). Que faire de ces observations ?
+
+```{r q8_2}
+# Votre code ici
+
+```
+
+---
+
+# Synthèse et conclusion
+
+**Question finale** : Rédigez une synthèse de 10-15 lignes présentant vos principaux résultats économétriques comme vous le feriez dans un article académique court. Discutez :
+
+- Les principaux déterminants du salaire identifiés
+- La robustesse des résultats (tests effectués)
+- Les limites de l'analyse (variables omises, causalité, etc.)
+
+```{r synthese}
+# Utilisez ce chunk pour tout calcul supplémentaire nécessaire à votre synthèse
+```
+
+> **[Rédigez votre synthèse ici]**
+
+---
+
+# Barème indicatif
+
+| Partie | Points |
+|:-------|:------:|
+| 1 – Exploration des données | 10 |
+| 2 – Régression simple | 10 |
+| 3 – Régression multiple | 20 |
+| 4 – Tests d'hypothèses | 20 |
+| 5 – Diagnostic Gauss-Markov | 20 |
+| 6 – Interactions et non-linéarités | 10 |
+| 7 – Sélection de modèles | 5 |
+| 8 – Prédiction | 5 |
+| **Total** | **100** |
+
+---
+
+*Durée conseillée : 4 heures — Tous documents autorisés — R et RStudio requis*
