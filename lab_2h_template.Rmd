@@ -1,0 +1,509 @@
+---
+title: "Lab Session – Multiple Regression in Econometrics"
+subtitle: "SOLUTION TEMPLATE — Fill in the blanks"
+author: "Student: ___________________________"
+date: "Academic Year 2025-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4)
+```
+
+> **Instructions for this template:**
+> Each code chunk contains scaffolding comments (lines starting with `#`) that guide you
+> step by step. Replace every `___` with appropriate R code.
+> Write your textual interpretations in the `> **Interpretation:**` blocks.
+
+---
+
+# Setup
+
+```{r load_packages}
+# Load required packages (install first if needed)
+library(tidyverse)
+library(car)        # linearHypothesis(), vif()
+library(lmtest)     # bptest()
+library(sandwich)   # vcovHC()
+library(stargazer)  # regression tables
+library(ggcorrplot) # correlation matrix plot
+library(broom)      # tidy()
+```
+
+```{r load_data}
+# Load the dataset
+dataset <- read.csv("wages.csv", stringsAsFactors = FALSE)
+
+# Convert categorical variables to ordered factors
+# Reference levels: city_size = "rural", contract_type = "fixed_term"
+dataset <- dataset %>%
+  mutate(
+    city_size     = factor(city_size,     levels = c("rural", "small", "large")),
+    contract_type = factor(contract_type, levels = c("fixed_term", "permanent", "self_employed"))
+  )
+```
+
+---
+
+# Part 1 – Data Exploration *(~20 min)*
+
+## Q1.1 — Descriptive Statistics
+
+```{r q1_1}
+# 1. Print the dataset dimensions
+dim(___)
+
+# 2. Display variable types using glimpse
+glimpse(___)
+
+# 3. Summary statistics for numeric variables
+# Hint: use summary() or summarise(across(...))
+num_vars <- c("wage", "log_wage", "education", "experience",
+              "age", "hours", "num_children")
+
+dataset %>%
+  select(all_of(___)) %>%
+  summary()
+
+# 4. Count men and women (female = 0 or 1)
+table(dataset$___)
+
+# 5. Contract type breakdown
+table(dataset$___)
+```
+
+> **Interpretation:**
+> [Describe the main characteristics of the sample: average wage, education level,
+>  gender balance, contract type distribution.]
+
+## Q1.2 — Wage Distributions
+
+```{r q1_2, fig.width = 10, fig.height = 4}
+# Hint: use ggplot() + geom_histogram()
+# Create two histograms side by side:
+#   - Left panel: raw 'wage' variable
+#   - Right panel: 'log_wage' variable
+# Use gridExtra::grid.arrange(p1, p2, ncol = 2) to arrange them
+
+p1 <- ggplot(dataset, aes(x = ___)) +
+  geom_histogram(bins = 40, fill = "#2196F3", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = mean(dataset$wage),   color = "red",    linetype = "dashed") +
+  geom_vline(xintercept = median(dataset$wage), color = "orange", linetype = "dashed") +
+  labs(title = "Raw Wage", subtitle = "Red = mean | Orange = median",
+       x = "Wage (USD)", y = "Count") +
+  theme_minimal()
+
+p2 <- ggplot(dataset, aes(x = ___)) +
+  geom_histogram(bins = 40, fill = "#4CAF50", color = "white", alpha = 0.8) +
+  labs(title = "Log-Wage",
+       x = "Log-Wage", y = "Count") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Interpretation:**
+> [Describe the shapes of both distributions. Why is log_wage better suited for regression?
+>  Give at least 2 reasons.]
+
+## Q1.3 — Correlation Matrix
+
+```{r q1_3, fig.width = 7, fig.height = 6}
+# Select the continuous variables and compute the correlation matrix
+cor_vars <- dataset %>%
+  select(___, ___, ___, ___, ___)   # log_wage, education, experience, age, hours
+
+mat_cor <- cor(___, use = "complete.obs")
+round(mat_cor, 3)
+
+# Plot with ggcorrplot
+ggcorrplot(mat_cor,
+           method = "circle", type = "lower",
+           lab = TRUE, lab_size = 3,
+           colors = c("#E91E63", "white", "#2196F3"),
+           title = "Correlation Matrix") +
+  theme_minimal()
+```
+
+> **Interpretation:**
+> [Identify the two most strongly correlated pairs. What does this imply for the regression?]
+
+## Q1.4 — Scatter Plots
+
+```{r q1_4, fig.width = 10, fig.height = 4}
+# Scatter plot 1: log_wage ~ education with linear fit
+p1 <- ggplot(dataset, aes(x = ___, y = ___)) +
+  geom_jitter(alpha = 0.3, color = "#2196F3", width = 0.2) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Log-Wage vs Education",
+       x = "Years of Education", y = "Log-Wage") +
+  theme_minimal()
+
+# Scatter plot 2: log_wage ~ experience with both linear and LOESS fits
+p2 <- ggplot(dataset, aes(x = ___, y = ___)) +
+  geom_jitter(alpha = 0.3, color = "#4CAF50", width = 0.3) +
+  geom_smooth(method = "lm",    color = "red",       se = TRUE, linetype = "dashed") +
+  geom_smooth(method = "loess", color = "darkgreen", se = TRUE) +
+  labs(title = "Log-Wage vs Experience",
+       subtitle = "Red (dashed) = linear | Green = LOESS",
+       x = "Years of Experience", y = "Log-Wage") +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Interpretation:**
+> [Describe the shape of each relationship. Why does the experience-wage plot motivate
+>  including an experience-squared term?]
+
+---
+
+# Part 2 – Simple OLS Regression *(~15 min)*
+
+## Q2.1 — Simple Regression
+
+```{r q2_1}
+# Estimate: log_wage ~ education
+model_simple <- lm(___ ~ ___, data = dataset)
+
+# Display the full summary
+summary(___)
+```
+
+> **Interpretation:**
+> - Coefficient on education: ___
+> - Economic meaning (percentage return): ___
+> - R²: ___ — meaning: ___
+
+## Q2.2 — Manual OLS Computation
+
+```{r q2_2}
+x <- dataset$education
+y <- dataset$log_wage
+
+# Compute beta_1 manually using the OLS formula:
+# beta1 = sum((x - x_bar)(y - y_bar)) / sum((x - x_bar)^2)
+beta1_manual <- sum((___ - mean(___)) * (___ - mean(___))) /
+                sum((___ - mean(___))^2)
+
+# Compute beta_0:
+# beta0 = y_bar - beta1 * x_bar
+beta0_manual <- mean(___) - ___ * mean(___)
+
+cat("Manual β̂₀:", round(beta0_manual, 6), "\n")
+cat("Manual β̂₁:", round(beta1_manual, 6), "\n")
+
+cat("lm() β̂₀  :", round(coef(model_simple)[1], 6), "\n")
+cat("lm() β̂₁  :", round(coef(model_simple)[2], 6), "\n")
+
+# Check: differences should be ~0
+cat("Difference β₀:", abs(beta0_manual - coef(model_simple)[1]), "\n")
+cat("Difference β₁:", abs(beta1_manual - coef(model_simple)[2]), "\n")
+```
+
+> **Comment:**
+> [Are the results identical? What does this confirm about the formula?]
+
+---
+
+# Part 3 – Multiple OLS Regression *(~35 min)*
+
+## Q3.1 — Standard Mincer Model
+
+```{r q3_1}
+# Estimate the Mincer model: log_wage ~ education + experience + exp_squared
+model_mincer <- lm(___ ~ ___ + ___ + ___, data = dataset)
+summary(___)
+```
+
+> **Interpretation:**
+> - Coefficient on education: ___ (compare to simple model: ___)
+> - Coefficient on experience: ___ (sign: ___, meaning: ___)
+> - Coefficient on exp_squared: ___ (sign: ___, meaning: ___)
+> - Adjusted R² improved from ___ to ___
+
+## Q3.2 — Extended Model
+
+```{r q3_2}
+# Add: female, public_sector, city_size, contract_type, unionized, num_children
+model_extended <- lm(log_wage ~ education + experience + exp_squared +
+                       ___ + ___ + ___ + ___ +
+                       ___ + ___,
+                     data = dataset)
+summary(___)
+```
+
+> **Interpretation:**
+> - `female` coefficient: ___ → women earn approximately ___% [more/less] than men
+> - `public_sector` coefficient: ___ → public sector premium ≈ ___%
+> - Reference for `city_size`: "rural" — "small" coefficient: ___, "large": ___
+> - Reference for `contract_type`: "fixed_term" — "permanent" coefficient: ___
+
+## Q3.3 — Economic Calculations
+
+```{r q3_3}
+coefs <- coef(model_extended)
+
+# a) Public sector wage premium (%)
+# Hint: for a dummy variable, % effect = (exp(beta) - 1) * 100
+premium_pub <- (exp(coefs[___]) - 1) * 100
+cat("a) Public sector premium:", round(premium_pub, 2), "%\n")
+
+# b) Gender wage gap (%)
+gap_gender <- (exp(coefs[___]) - 1) * 100
+cat("b) Gender wage gap:", round(gap_gender, 2), "%\n")
+
+# c) Marginal return to experience
+# Formula: d ln(w)/d exp = beta_exp + 2 * beta_exp2 * exp
+beta_exp  <- coefs["experience"]
+beta_exp2 <- coefs["exp_squared"]
+
+# At 10 years:
+marginal_10 <- (___ + 2 * ___ * 10) * 100
+cat("c) Marginal return at 10 years:", round(marginal_10, 3), "%\n")
+
+# At 30 years:
+marginal_30 <- (___ + 2 * ___ * ___) * 100
+cat("   Marginal return at 30 years:", round(marginal_30, 3), "%\n")
+
+# Peak experience: set marginal return = 0 and solve
+# 0 = beta_exp + 2 * beta_exp2 * exp* --> exp* = -beta_exp / (2 * beta_exp2)
+exp_peak <- -___ / (2 * ___)
+cat("   Wages peak at:", round(exp_peak, 1), "years of experience\n")
+```
+
+## Q3.4 — Comparative Regression Table
+
+```{r q3_4, results='asis'}
+stargazer(model_simple, model_mincer, model_extended,
+          type = "html",
+          title = "Table 1 – OLS Estimates of Log-Wage",
+          column.labels = c("(1) Simple", "(2) Mincer", "(3) Extended"),
+          dep.var.label = "Log-Wage",
+          omit.stat = c("f", "ser"),
+          digits = 4,
+          notes = "Standard errors in parentheses. *** p<0.01, ** p<0.05, * p<0.1")
+```
+
+> **Comment:**
+> [Compare the adjusted R² values across models. Is the added complexity justified?]
+
+---
+
+# Part 4 – Hypothesis Testing *(~25 min)*
+
+## Q4.1 — Individual t-tests
+
+```{r q4_1}
+# Use broom::tidy() to get a clean coefficient table
+coef_table <- tidy(model_extended) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(across(where(is.numeric), ~round(., 4)),
+         significant_5pct = p.value < ___)     # fill in the threshold
+
+print(coef_table, n = 20)
+
+# Report details for 'unionized'
+cat("\nFor 'unionized':\n")
+cat("t-statistic:", coef_table$statistic[coef_table$term == "unionized"], "\n")
+cat("p-value    :", coef_table$p.value[coef_table$term   == "unionized"], "\n")
+```
+
+> **H₀ tested by the t-test:** H₀: β_k = ___ vs H₁: β_k ≠ ___
+>
+> **Conclusion for `unionized`:** [Is the coefficient significant at 5%? What does this mean?]
+
+## Q4.2 — Global F-test
+
+```{r q4_2}
+# Extract the F-statistic from the model summary
+f_stat <- summary(model_extended)$fstatistic
+cat("F-statistic:", round(f_stat[1], 2), "\n")
+cat("df:", f_stat[2], "and", f_stat[3], "\n")
+
+# Compute the p-value
+p_val_F <- pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE)
+cat("p-value:", p_val_F, "\n")
+```
+
+> **H₀ of the F-test:** H₀: β₁ = β₂ = ⋯ = β_K = ___
+>
+> **Conclusion:** [Is the model globally significant? What does this test tell us?]
+
+## Q4.3 — Joint Test: Experience
+
+```{r q4_3}
+# Test H0: beta_experience = 0 AND beta_exp_squared = 0 jointly
+test_exp <- linearHypothesis(model_extended,
+                             c("experience = 0", "exp_squared = 0"))
+print(___)
+```
+
+> **Conclusion:** [Report the F-statistic and p-value. Do we reject H₀? What does this imply?]
+
+## Q4.4 — Test: Return to Education = 8%
+
+```{r q4_4}
+# Test H0: beta_education = 0.08
+test_educ <- linearHypothesis(model_extended, "education = ___")
+print(___)
+
+# Also show the 95% confidence interval for the education coefficient
+confint(model_extended)["education", ]
+```
+
+> **Conclusion:** [Is 0.08 within the 95% confidence interval? Do we reject H₀ at 5%?]
+
+---
+
+# Part 5 – Gauss-Markov Diagnostics *(~20 min)*
+
+## Q5.1 — Breusch-Pagan Test
+
+```{r q5_1}
+# Run the Breusch-Pagan test on the extended model
+test_bp <- bptest(___)
+print(test_bp)
+
+# State your conclusion
+cat("\nH₀:", "___\n")
+cat("H₁:", "___\n\n")
+cat("Conclusion at 5%:", ifelse(test_bp$p.value < 0.05, "Reject H₀", "Do not reject H₀"), "\n")
+```
+
+> **Consequence if H₀ is rejected:**
+> [What happens to OLS estimators under heteroskedasticity? Are they still BLUE?]
+
+## Q5.2 — Robust Standard Errors
+
+```{r q5_2}
+# Classic standard errors
+cat("=== Classic SEs ===\n")
+coeftest(___) %>% round(4)
+
+# HC3 Robust standard errors
+cat("\n=== HC3 Robust SEs ===\n")
+robust_result <- coeftest(___, vcov = vcovHC(___, type = "HC3"))
+print(round(robust_result, 4))
+
+# Build a comparison table
+se_classic <- sqrt(diag(vcov(___)))
+se_robust  <- sqrt(diag(vcovHC(___, type = "HC3")))
+
+data.frame(
+  variable   = names(se_classic),
+  SE_classic = round(se_classic, 5),
+  SE_robust  = round(se_robust,  5),
+  ratio      = round(se_robust / se_classic, 3)
+) %>% arrange(desc(ratio)) %>% print()
+```
+
+> **Comparison:**
+> [Which coefficients have the largest ratio? Do significance conclusions change?]
+
+## Q5.3 — Variance Inflation Factors
+
+```{r q5_3}
+# Compute VIF for the extended model
+vif_vals <- vif(___)
+print(vif_vals)
+
+cat("\nThresholds: VIF < 5 = OK | 5–10 = moderate | > 10 = severe\n")
+```
+
+> **Conclusion:**
+> [Are there any VIF values above 5? Is multicollinearity a problem in this model?]
+
+---
+
+# Part 6 – Prediction *(~5 min)*
+
+## Q6.1 — Predicting Wages for Two Profiles
+
+```{r q6_1}
+# Create the new data frame for prediction
+new_profiles <- data.frame(
+  education     = c(___, 12),   # Profile A = 17
+  experience    = c(10, ___),   # Profile B = 20
+  exp_squared   = c(___, ___),  # = experience^2
+  female        = c(___, 1),    # Profile A = male (0)
+  public_sector = c(0, ___),    # Profile B = public (1)
+  city_size     = factor(c("large", "rural"), levels = c("rural", "small", "large")),
+  contract_type = factor(c("permanent", "fixed_term"),
+                         levels = c("fixed_term", "permanent", "self_employed")),
+  num_children  = c(0, ___),    # Profile B = 2
+  unionized     = c(0, 0),
+  hours         = c(39, 35)
+)
+rownames(new_profiles) <- c("Profile A", "Profile B")
+
+# 95% Confidence Intervals (for the mean prediction)
+pred_ci <- predict(model_extended, newdata = new_profiles,
+                   interval = "___", level = 0.95)
+
+# 95% Prediction Intervals (for an individual)
+pred_pi <- predict(model_extended, newdata = new_profiles,
+                   interval = "___", level = 0.95)
+
+# Convert from log to USD
+results <- data.frame(
+  Profile             = rownames(new_profiles),
+  Log_Wage_Pred       = round(pred_ci[, "fit"], 4),
+  Wage_Median         = round(exp(pred_ci[, "fit"])),
+  CI_Lower            = round(exp(pred_ci[, "lwr"])),
+  CI_Upper            = round(exp(pred_ci[, "upr"])),
+  PI_Lower            = round(exp(pred_pi[, "lwr"])),
+  PI_Upper            = round(exp(pred_pi[, "upr"]))
+)
+print(results)
+```
+
+> **Interpretation:**
+> - Profile A predicted wage: ___. Profile B predicted wage: ___.
+>
+> **CI vs PI:**
+> - Confidence interval: uncertainty about ___.
+> - Prediction interval: uncertainty about ___. Always wider because ___.
+
+---
+
+# Summary
+
+```{r summary_chunk}
+# Optional: any additional calculations for your summary paragraph
+cat("Adjusted R² (extended model):", round(summary(model_extended)$adj.r.squared, 4), "\n")
+```
+
+> **[Write your 8–12 line academic summary here]**
+>
+> Include: main wage determinants identified | tests performed and their outcomes |
+> limitations (omitted variables, causality, data quality).
+
+---
+
+# Grading Rubric
+
+| Section | Points |
+|:--------|:------:|
+| 1 – Data Exploration | 15 |
+| 2 – Simple Regression | 10 |
+| 3 – Multiple Regression | 25 |
+| 4 – Hypothesis Testing | 25 |
+| 5 – Gauss-Markov Diagnostics | 15 |
+| 6 – Prediction | 10 |
+| **Total** | **100** |
+
+---
+
+*Duration: 2 hours — All materials allowed — R and RStudio required*

@@ -1,0 +1,428 @@
+---
+title: "Lab Session – Multiple Regression in Econometrics"
+subtitle: "Wage Determinants: An Application of the Mincer Equation"
+author: "Student: ___________________________"
+date: "Academic Year 2025-2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4)
+```
+
+---
+
+# Lab Overview
+
+## Economic Context
+
+The **Mincer equation** (1974) is one of the most widely estimated models in labor economics. It models the logarithm of wages as a function of education, experience, and experience squared:
+
+$$\ln(w_i) = \alpha + \beta_1 \cdot \text{educ}_i + \beta_2 \cdot \text{exp}_i + \beta_3 \cdot \text{exp}_i^2 + \varepsilon_i$$
+
+This lab uses a simulated dataset of **500 employed individuals** and guides you through all the steps of a rigorous econometric analysis using OLS multiple regression.
+
+## Learning Objectives
+
+By the end of this lab, you will be able to:
+
+1. Explore and prepare a dataset for regression
+2. Estimate and interpret a multiple OLS regression model
+3. Test the significance of individual coefficients and overall model fit
+4. Detect and address violations of the Gauss-Markov assumptions
+5. Compare and select among alternative model specifications
+6. Produce predictions and quantify their uncertainty
+
+## Required Packages
+
+```{r packages, eval=FALSE}
+# Install packages if needed
+install.packages(c("tidyverse", "car", "lmtest", "sandwich",
+                   "stargazer", "ggcorrplot", "broom", "GGally"))
+```
+
+```{r load_packages}
+library(tidyverse)    # data manipulation and visualization
+library(car)          # regression tests (VIF, linearHypothesis)
+library(lmtest)       # hypothesis tests (Breusch-Pagan, etc.)
+library(sandwich)     # heteroskedasticity-robust standard errors
+library(stargazer)    # regression tables
+library(ggcorrplot)   # graphical correlation matrix
+library(broom)        # tidying model outputs
+library(GGally)       # ggpairs
+```
+
+## Loading the Data
+
+```{r load_data}
+# First generate the data using the generate_data.R script
+# source("generate_data.R")
+
+dataset <- read.csv("wages.csv", stringsAsFactors = FALSE)
+```
+
+### Variable Description
+
+| Variable        | Type        | Description                                           |
+|:----------------|:------------|:------------------------------------------------------|
+| `wage`          | Numeric     | Monthly net wage in euros                             |
+| `log_wage`      | Numeric     | Natural logarithm of wage                             |
+| `education`     | Numeric     | Years of education (8 to 22 years)                    |
+| `experience`    | Numeric     | Years of work experience                              |
+| `exp_squared`   | Numeric     | Experience squared (Mincer term)                      |
+| `age`           | Numeric     | Individual's age                                      |
+| `female`        | Binary      | 1 = female, 0 = male                                  |
+| `public_sector` | Binary      | 1 = public sector, 0 = private sector                 |
+| `city_size`     | Categorical | "rural", "small", "large" (city size)                 |
+| `contract_type` | Categorical | "permanent", "fixed_term", "self_employed"            |
+| `num_children`  | Numeric     | Number of children                                    |
+| `unionized`     | Binary      | 1 = union member, 0 = non-union                       |
+| `hours`         | Numeric     | Weekly hours worked                                   |
+
+---
+
+# Part 1 – Data Exploration
+
+## Structure and Descriptive Statistics
+
+**Question 1.1**: Display the dimensions of the dataset, the first 6 rows, and the type of each variable. Convert the categorical variables (`city_size`, `contract_type`) to factors with appropriate levels (reference: "rural" and "fixed_term").
+
+```{r q1_1}
+# Your code here
+
+```
+
+**Question 1.2**: Compute descriptive statistics (mean, median, standard deviation, min, max, 25th and 75th percentiles) for the numeric variables. How many men and women are in the sample? What is the breakdown by contract type and city size?
+
+```{r q1_2}
+# Your code here
+
+```
+
+## Visualizing the Dependent Variable
+
+**Question 1.3**: Plot two side-by-side histograms: the distribution of raw `wage` and that of `log_wage`. Draw conclusions about the shape of the distribution and justify the choice of the log-transformed dependent variable for regression.
+
+```{r q1_3, fig.width=10}
+# Your code here
+
+```
+
+**Question 1.4**: Display the distribution of log-wage separately for men and women using a density plot (`geom_density`). Add vertical lines for the medians. Comment on the observed gap.
+
+```{r q1_4}
+# Your code here
+
+```
+
+## Correlation Matrix and Scatterplots
+
+**Question 1.5**: Compute and display graphically the correlation matrix among the continuous numeric variables (`log_wage`, `education`, `experience`, `age`, `hours`). Identify strongly correlated pairs and discuss potential implications for regression.
+
+```{r q1_5}
+# Your code here
+
+```
+
+**Question 1.6**: Create two scatterplots (with regression line):
+
+- `log_wage` as a function of `education`
+- `log_wage` as a function of `experience`
+
+For the second, also add a non-linear trend curve (LOESS). What do you notice about the shape of the relationship?
+
+```{r q1_6, fig.width=10}
+# Your code here
+
+```
+
+---
+
+# Part 2 – Simple Regression (Recap)
+
+**Question 2.1**: Estimate the **simple regression** model of log-wage on education only. Display the full summary (`summary()`). Interpret the coefficient on education in economic terms (marginal return).
+
+```{r q2_1}
+# Your code here
+
+```
+
+**Question 2.2**: Plot the scatterplot `log_wage ~ education` with the estimated regression line and 95% confidence intervals. Add a title, axis labels, and an annotation showing the estimated coefficient.
+
+```{r q2_2}
+# Your code here
+
+```
+
+**Question 2.3**: Compute **manually** (without using `lm()`) the OLS estimators $\hat{\beta}_0$ and $\hat{\beta}_1$ using the formulas:
+
+$$\hat{\beta}_1 = \frac{\sum(x_i - \bar{x})(y_i - \bar{y})}{\sum(x_i - \bar{x})^2} \qquad \hat{\beta}_0 = \bar{y} - \hat{\beta}_1 \bar{x}$$
+
+Verify that your results match those from `lm()`.
+
+```{r q2_3}
+# Your code here
+
+```
+
+---
+
+# Part 3 – Multiple Regression (OLS)
+
+## The Basic Mincer Model
+
+**Question 3.1**: Estimate the **standard Mincer model**:
+
+$$\ln(w_i) = \beta_0 + \beta_1 \cdot \text{educ}_i + \beta_2 \cdot \text{exp}_i + \beta_3 \cdot \text{exp}^2_i + \varepsilon_i$$
+
+Display the summary. How do the $R^2$ and coefficients evolve compared to the simple regression? Interpret each coefficient.
+
+```{r q3_1}
+# Your code here
+
+```
+
+## Extended Model
+
+**Question 3.2**: Estimate an **extended model** by adding the variables: `female`, `public_sector`, `city_size`, `contract_type`, `unionized`, `num_children`. Make sure categorical variables are proper factors. Interpret the coefficients on binary variables and reference categories.
+
+```{r q3_2}
+# Your code here
+
+```
+
+**Question 3.3**: Based on the extended model, answer the following:
+
+a. All else equal, what is the estimated wage premium (in %) associated with being in the public sector?
+b. What is the estimated wage gap (in %) between men and women?
+c. What is the effect of one additional year of experience on log-wage, for an individual with 10 years of experience? And with 25 years?
+
+> **Reminder**: For the quadratic experience term, the marginal return to experience is: $\frac{\partial \ln(w)}{\partial \text{exp}} = \beta_2 + 2\beta_3 \cdot \text{exp}$
+
+```{r q3_3}
+# Your code here
+
+```
+
+## Comparative Regression Table
+
+**Question 3.4**: Produce a **regression table** comparing the 3 models (simple, Mincer, extended) using `stargazer()` or `broom::tidy()`. Compare the adjusted $R^2$ values. Is the additional complexity of the extended model justified?
+
+```{r q3_4, results='asis'}
+# Your code here
+
+```
+
+---
+
+# Part 4 – Hypothesis Testing
+
+## Student's t-test (Individual Significance)
+
+**Question 4.1**: For the extended model, identify the **non-significant** coefficients at the 5% level. What is the null hypothesis tested by the t-test for each coefficient? Report the $t$ statistic and p-value for the `unionized` coefficient.
+
+```{r q4_1}
+# Your code here
+
+```
+
+## Fisher F-test (Overall Significance)
+
+**Question 4.2**: Interpret the **F-statistic** reported in the extended model summary. What is the null hypothesis of this test? Conclude on the overall significance of the model.
+
+```{r q4_2}
+# Your code here
+
+```
+
+## Fisher F-test for Linear Restrictions
+
+**Question 4.3**: Jointly test the hypothesis that **experience and its square have no effect** on log-wage ($H_0 : \beta_{\text{exp}} = \beta_{\text{exp}^2} = 0$) using the `linearHypothesis()` function from the `car` package. State your conclusion.
+
+```{r q4_3}
+# Your code here
+
+```
+
+**Question 4.4**: Test whether the effect of **location variables** (`city_size`) is jointly zero. Interpret the result economically.
+
+```{r q4_4}
+# Your code here
+
+```
+
+## Test of a Specific Return
+
+**Question 4.5**: An economist claims that **the return to education is exactly 8%** ($\beta_{\text{educ}} = 0.08$). Test this hypothesis using `linearHypothesis()`. Conclude at the 5% significance level.
+
+```{r q4_5}
+# Your code here
+
+```
+
+---
+
+# Part 5 – Gauss-Markov Diagnostic Tests
+
+## Residual Analysis
+
+**Question 5.1**: From the extended model, plot the **4 standard R diagnostic plots** (`plot(model, which = 1:4)`). For each plot, explain what it tests and what you observe.
+
+```{r q5_1, fig.width=10, fig.height=8}
+# Your code here
+
+```
+
+## Normality of Residuals
+
+**Question 5.2**: Plot a **Q-Q plot** of the studentized residuals and perform a **Shapiro-Wilk test** (or Jarque-Bera). Conclude on the normality of residuals. Is this a critical assumption in large samples? Why?
+
+```{r q5_2}
+# Your code here
+
+```
+
+## Heteroskedasticity
+
+**Question 5.3**: Perform the **Breusch-Pagan test** (`bptest()` from the `lmtest` package). Clearly state $H_0$ and $H_1$. Conclude at the 5% level.
+
+```{r q5_3}
+# Your code here
+
+```
+
+**Question 5.4**: If the Breusch-Pagan test is rejected, re-estimate the extended model with **heteroskedasticity-robust standard errors** (HC3 type, via `coeftest()` + `vcovHC()`). Compare standard errors and p-values before and after correction. Do your conclusions change?
+
+```{r q5_4}
+# Your code here
+
+```
+
+## Multicollinearity
+
+**Question 5.5**: Compute the **Variance Inflation Factor (VIF)** for each variable in the extended model using `vif()`. What thresholds are commonly used? Is there a multicollinearity problem in this model?
+
+```{r q5_5}
+# Your code here
+
+```
+
+**Question 5.6**: The variable `age` is strongly correlated with `experience`. Estimate an alternative model replacing `experience` and `exp_squared` with `age` and `age^2`. Compare the VIFs and adjusted $R^2$ values. Which model do you prefer and why?
+
+```{r q5_6}
+# Your code here
+
+```
+
+---
+
+# Part 6 – Interaction Terms and Non-Linearities
+
+**Question 6.1**: Add to the extended model an **interaction term** between `female` and `num_children`. This term tests whether the effect of children on wages differs by gender. Estimate the model and interpret the interaction coefficient.
+
+```{r q6_1}
+# Your code here
+
+```
+
+**Question 6.2**: Compute and plot graphically the **marginal effect of experience** on log-wage (from the extended model) for experience values ranging from 0 to 40 years. At what level of experience does the wage reach its maximum, all else equal?
+
+```{r q6_2}
+# Your code here
+
+```
+
+---
+
+# Part 7 – Model Selection
+
+**Question 7.1**: Compare the following models using the **Akaike Information Criterion (AIC)** and the **Bayesian Information Criterion (BIC)**. Which model is preferred by each criterion?
+
+- Model 1: Basic Mincer (`education + experience + exp_squared`)
+- Model 2: Mincer + gender and sector
+- Model 3: Full extended model
+- Model 4: Extended model + `female × num_children` interaction
+
+```{r q7_1}
+# Your code here
+
+```
+
+**Question 7.2**: Perform a **nested Fisher test** (ANOVA) between the Mincer model and the extended model. Is the additional complexity statistically justified?
+
+```{r q7_2}
+# Your code here
+
+```
+
+---
+
+# Part 8 – Prediction
+
+**Question 8.1**: Using the extended model, predict the **monthly wage** (in euros, not in log) for the two following profiles:
+
+| Profile    | educ | exp | female | public_sector | city_size | contract_type | num_children | unionized | hours |
+|:-----------|:----:|:---:|:------:|:-------------:|:---------:|:-------------:|:------------:|:---------:|:-----:|
+| Profile A  | 17   | 10  | 0      | 0             | large     | permanent     | 0            | 0         | 39    |
+| Profile B  | 12   | 20  | 1      | 1             | rural     | fixed_term    | 2            | 0         | 35    |
+
+Also report the **95% confidence intervals** for the mean prediction and the individual prediction intervals. Explain the difference between the two.
+
+```{r q8_1}
+# Your code here
+
+```
+
+**Question 8.2**: Compute the **standardized residuals** from the extended model. Identify potentially **outlying** observations (standardized residual > 3 in absolute value) and **influential leverage points** (Cook's distance > 4/n). What should be done with these observations?
+
+```{r q8_2}
+# Your code here
+
+```
+
+---
+
+# Summary and Conclusion
+
+**Final Question**: Write a 10–15 line summary presenting your main econometric results as you would in a short academic paper. Discuss:
+
+- The main wage determinants identified
+- The robustness of the results (tests performed)
+- The limitations of the analysis (omitted variables, causality, etc.)
+
+```{r synthesis}
+# Use this chunk for any additional calculations needed for your summary
+```
+
+> **[Write your summary here]**
+
+---
+
+# Grading Rubric
+
+| Section | Points |
+|:--------|:------:|
+| 1 – Data Exploration | 10 |
+| 2 – Simple Regression | 10 |
+| 3 – Multiple Regression | 20 |
+| 4 – Hypothesis Testing | 20 |
+| 5 – Gauss-Markov Diagnostics | 20 |
+| 6 – Interactions and Non-Linearities | 10 |
+| 7 – Model Selection | 5 |
+| 8 – Prediction | 5 |
+| **Total** | **100** |
+
+---
+
+*Recommended duration: 4 hours — All materials allowed — R and RStudio required*
